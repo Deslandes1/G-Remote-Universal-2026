@@ -20,7 +20,6 @@ window.addEventListener('message', function(event) {
             }
         }
         window.history.replaceState({}, '', url);
-        // Force Streamlit to re-run by dispatching a location change event
         window.dispatchEvent(new Event('popstate'));
     }
 });
@@ -39,9 +38,16 @@ if "selected_char" not in st.session_state:
 if "command_history" not in st.session_state:
     st.session_state.command_history = []
 
+# ---------- FULL UUID CONSTANTS ----------
+GENERIC_ACCESS = "00001800-0000-1000-8000-00805f9b34fb"
+GENERIC_ATTRIBUTE = "00001801-0000-1000-8000-00805f9b34fb"
+DEVICE_INFO = "0000180a-0000-1000-8000-00805f9b34fb"
+HID_SERVICE = "00001812-0000-1000-8000-00805f9b34fb"
+BATTERY_SERVICE = "0000180f-0000-1000-8000-00805f9b34fb"
+
 # ---------- WEB BLUETOOTH COMPONENT ----------
 def web_bt_component():
-    return """
+    return f"""
     <div id="bt-status" style="margin-bottom:10px;">🔍 Click 'Scan' to connect</div>
     <button id="scan-btn" onclick="scan()">🔍 Scan for Devices</button>
     <button id="disconnect-btn" onclick="disconnect()" style="display:none;">🔌 Disconnect</button>
@@ -50,135 +56,145 @@ def web_bt_component():
     <div id="cmd-log" style="margin-top:10px; background:#f4f4f4; padding:5px; border-radius:5px; max-height:200px; overflow-y:auto;"></div>
 
     <script>
-        let device = null, server = null, charMap = {}, selectedCharUUID = null;
+        const GENERIC_ACCESS = "{GENERIC_ACCESS}";
+        const GENERIC_ATTRIBUTE = "{GENERIC_ATTRIBUTE}";
+        const DEVICE_INFO = "{DEVICE_INFO}";
+        const HID_SERVICE = "{HID_SERVICE}";
+        const BATTERY_SERVICE = "{BATTERY_SERVICE}";
 
-        function updateParent(data) {
-            window.parent.postMessage({ type: 'bt_update', data }, '*');
-        }
+        let device = null, server = null, charMap = {{}}, selectedCharUUID = null;
 
-        function log(msg) {
+        function updateParent(data) {{
+            window.parent.postMessage({{ type: 'bt_update', data }}, '*');
+        }}
+
+        function log(msg) {{
             const el = document.getElementById('cmd-log');
             el.innerHTML += msg + '<br>';
             el.scrollTop = el.scrollHeight;
-        }
+        }}
 
-        function updateStatus(msg) {
+        function updateStatus(msg) {{
             document.getElementById('bt-status').innerText = msg;
-            updateParent({ bt_status: msg });
-        }
+            updateParent({{ bt_status: msg }});
+        }}
 
-        async function scan() {
-            if (!navigator.bluetooth) {
+        async function scan() {{
+            if (!navigator.bluetooth) {{
                 alert('Web Bluetooth not supported. Use Chrome/Edge.');
                 return;
-            }
-            try {
+            }}
+            try {{
                 document.getElementById('scan-btn').disabled = true;
                 updateStatus('Scanning...');
-                device = await navigator.bluetooth.requestDevice({
-                    filters: [{ services: ['00001800-0000-1000-8000-00805f9b34fb'] }],
-                    optionalServices: ['00001800', '00001801', '0000180a', '00001812']
-                });
-                if (device) {
+                device = await navigator.bluetooth.requestDevice({{
+                    filters: [{{ services: [GENERIC_ACCESS] }}],
+                    optionalServices: [GENERIC_ACCESS, GENERIC_ATTRIBUTE, DEVICE_INFO, HID_SERVICE, BATTERY_SERVICE]
+                }});
+                if (device) {{
                     server = await device.gatt.connect();
                     updateStatus('Connected to ' + device.name);
-                    updateParent({ device_name: device.name, connected: 'true' });
+                    updateParent({{ device_name: device.name, connected: 'true' }});
 
                     const services = await server.getPrimaryServices();
                     let svcHtml = '<h4>Services</h4><ul>';
-                    let svcJson = {};
-                    for (let svc of services) {
+                    let svcJson = {{}};
+                    for (let svc of services) {{
                         const uuid = svc.uuid;
-                        svcHtml += `<li><strong>${uuid}</strong><ul>`;
-                        svcJson[uuid] = { characteristics: [] };
+                        svcHtml += `<li><strong>${{uuid}}</strong><ul>`;
+                        svcJson[uuid] = {{ characteristics: [] }};
                         const chars = await svc.getCharacteristics();
-                        for (let ch of chars) {
+                        for (let ch of chars) {{
                             charMap[ch.uuid] = ch;
-                            svcHtml += `<li>${ch.uuid} (${ch.properties.join(', ')})</li>`;
-                            svcJson[uuid].characteristics.push({ uuid: ch.uuid, properties: ch.properties });
-                        }
+                            svcHtml += `<li>${{ch.uuid}} (${{ch.properties.join(', ')}})</li>`;
+                            svcJson[uuid].characteristics.push({{ uuid: ch.uuid, properties: ch.properties }});
+                        }}
                         svcHtml += `</ul></li>`;
-                    }
+                    }}
                     svcHtml += '</ul>';
                     document.getElementById('services-info').innerHTML = svcHtml;
-                    updateParent({ services: JSON.stringify(svcJson) });
+                    updateParent({{ services: JSON.stringify(svcJson) }});
 
                     document.getElementById('scan-btn').style.display = 'none';
                     document.getElementById('disconnect-btn').style.display = 'inline';
-                    document.getElementById('device-info').innerHTML = `✅ Connected to: ${device.name}`;
-                }
-            } catch (err) {
+                    document.getElementById('device-info').innerHTML = `✅ Connected to: ${{device.name}}`;
+                }}
+            }} catch (err) {{
                 alert('Error: ' + err.message);
                 updateStatus('Error: ' + err.message);
-            } finally {
+            }} finally {{
                 document.getElementById('scan-btn').disabled = false;
-            }
-        }
+            }}
+        }}
 
-        async function disconnect() {
+        async function disconnect() {{
             if (server) await server.disconnect();
-            device = null; server = null; charMap = {};
+            device = null; server = null; charMap = {{}};
             document.getElementById('disconnect-btn').style.display = 'none';
             document.getElementById('scan-btn').style.display = 'inline';
             document.getElementById('device-info').innerHTML = '';
             document.getElementById('services-info').innerHTML = '';
             updateStatus('Disconnected');
-            updateParent({ device_name: null, connected: 'false', services: null });
-        }
+            updateParent({{ device_name: null, connected: 'false', services: null }});
+        }}
 
-        window.sendCommand = async function(data) {
-            if (!selectedCharUUID) { alert('Select a characteristic first.'); return; }
-            if (!server) { alert('Not connected.'); return; }
-            try {
+        window.sendCommand = async function(data) {{
+            if (!selectedCharUUID) {{ alert('Select a characteristic first.'); return; }}
+            if (!server) {{ alert('Not connected.'); return; }}
+            try {{
                 const char = charMap[selectedCharUUID];
-                if (!char) { alert('Characteristic not found.'); return; }
+                if (!char) {{ alert('Characteristic not found.'); return; }}
                 let bytes;
-                if (typeof data === 'string') {
-                    if (data.startsWith('0x')) {
-                        bytes = new Uint8Array(data.slice(2).match(/.{1,2}/g).map(b => parseInt(b,16))).buffer;
-                    } else {
+                if (typeof data === 'string') {{
+                    if (data.startsWith('0x')) {{
+                        const hex = data.slice(2);
+                        if (hex.length % 2 !== 0) {{ alert('Hex string must have even length'); return; }}
+                        bytes = new Uint8Array(hex.match(/.{{1,2}}/g).map(b => parseInt(b, 16))).buffer;
+                    }} else {{
                         bytes = new TextEncoder().encode(data);
-                    }
-                }
+                    }}
+                }}
                 await char.writeValue(bytes);
-                log(`✅ Sent: ${data}`);
+                log(`✅ Sent: ${{data}}`);
                 let hist = [];
-                try { hist = JSON.parse(new URL(window.parent.location.href).searchParams.get('history') || '[]'); } catch(e) {}
-                hist.push({ time: new Date().toLocaleTimeString(), data });
-                updateParent({ history: JSON.stringify(hist) });
-            } catch (e) { alert('Send error: ' + e.message); }
-        };
+                try {{ hist = JSON.parse(new URL(window.parent.location.href).searchParams.get('history') || '[]'); }} catch(e) {{}}
+                hist.push({{ time: new Date().toLocaleTimeString(), data }});
+                updateParent({{ history: JSON.stringify(hist) }});
+            }} catch (e) {{
+                alert('Send error: ' + e.message);
+            }}
+        }};
 
         // Restore state on load
-        (function() {
+        (function() {{
             const parentUrl = new URL(window.parent.location.href);
             const connected = parentUrl.searchParams.get('connected') === 'true';
             const name = parentUrl.searchParams.get('device_name');
-            if (connected && name) {
-                document.getElementById('device-info').innerHTML = `✅ Connected to: ${name}`;
+            if (connected && name) {{
+                document.getElementById('device-info').innerHTML = `✅ Connected to: ${{name}}`;
                 document.getElementById('scan-btn').style.display = 'none';
                 document.getElementById('disconnect-btn').style.display = 'inline';
                 updateStatus('Connected to ' + name);
-            }
+            }}
             const svc = parentUrl.searchParams.get('services');
-            if (svc) {
-                try {
+            if (svc) {{
+                try {{
                     const data = JSON.parse(svc);
                     let html = '<h4>Services</h4><ul>';
-                    for (let [uuid, info] of Object.entries(data)) {
-                        html += `<li><strong>${uuid}</strong><ul>`;
-                        for (let ch of info.characteristics) {
-                            html += `<li>${ch.uuid} (${ch.properties.join(', ')})</li>`;
-                        }
+                    for (let [uuid, info] of Object.entries(data)) {{
+                        html += `<li><strong>${{uuid}}</strong><ul>`;
+                        for (let ch of info.characteristics) {{
+                            html += `<li>${{ch.uuid}} (${{ch.properties.join(', ')}})</li>`;
+                        }}
                         html += `</ul></li>`;
-                    }
+                    }}
                     html += '</ul>';
                     document.getElementById('services-info').innerHTML = html;
-                } catch(e) {}
-            }
+                }} catch(e) {{}}
+            }}
             const sel = parentUrl.searchParams.get('selected_char');
             if (sel) selectedCharUUID = sel;
-        })();
+        }})();
     </script>
     """
 
