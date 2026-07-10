@@ -1,18 +1,14 @@
 """
 G Remote Universal – Bluetooth TV Remote Control
-- Uses 'bleak' for real Bluetooth communication (local machine only)
-- Falls back to simulation if bleak is not available
-- Scan, connect, explore services, and send commands
+- Uses 'bleak' for real Bluetooth (local only)
+- Falls back to simulation if bleak is not available or scanning fails
+- Works on Streamlit Cloud (simulation) and locally (real or simulated)
 """
 
 import streamlit as st
 import asyncio
-import json
-import random
-import threading
-import time
-from datetime import datetime
 import os
+from datetime import datetime
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(page_title="G Remote Universal", page_icon="📺", layout="wide")
@@ -32,35 +28,33 @@ if "selected_service" not in st.session_state:
     st.session_state.selected_service = None
 if "selected_char" not in st.session_state:
     st.session_state.selected_char = None
-if "custom_command" not in st.session_state:
-    st.session_state.custom_command = ""
 if "command_history" not in st.session_state:
     st.session_state.command_history = []
 if "bleak_available" not in st.session_state:
     st.session_state.bleak_available = False
+if "force_simulation" not in st.session_state:
+    st.session_state.force_simulation = False
+if "scan_attempted" not in st.session_state:
+    st.session_state.scan_attempted = False
 
 # ---------- ENVIRONMENT CHECK ----------
 def is_running_on_streamlit_cloud():
-    """Detect if running on Streamlit Cloud (or similar remote)."""
     return 'STREAMLIT_SERVER' in os.environ or 'STREAMLIT_CLOUD' in os.environ
 
 if is_running_on_streamlit_cloud():
-    st.warning("🌐 You are running on Streamlit Cloud. Bluetooth is not available. This app will work in simulation mode only.")
-    st.info("To control a real TV, clone the repository and run the app locally on your computer.")
     st.session_state.bleak_available = False
+    st.session_state.force_simulation = True
 else:
     try:
         import bleak
         from bleak import BleakScanner, BleakClient
         st.session_state.bleak_available = True
     except ImportError:
-        st.warning("⚠️ 'bleak' is not installed. Install it with: pip install bleak")
-        st.info("If you are running locally, install it and restart the app to enable real Bluetooth.")
         st.session_state.bleak_available = False
+        st.session_state.force_simulation = True
 
 # ---------- HELPER FUNCTIONS ----------
 def run_async(coro):
-    """Run an async coroutine in a new event loop."""
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -69,31 +63,7 @@ def run_async(coro):
         st.error(f"Async error: {e}")
         return None
 
-def scan_devices_sync():
-    """Scan for BLE devices (synchronous wrapper). Returns a list of dicts."""
-    if not st.session_state.bleak_available:
-        return simulate_scan()
-    try:
-        devices = run_async(BleakScanner.discover())
-        if not devices:
-            return []
-        # Convert to list of dicts, handling possible missing attributes
-        device_list = []
-        for d in devices:
-            # Use getattr to safely access attributes
-            name = getattr(d, 'name', None) or "Unknown"
-            address = getattr(d, 'address', None)
-            if not address:
-                # Some versions may use 'address' or 'device.address'
-                address = getattr(d, 'address', str(d))
-            device_list.append({"name": name, "address": address})
-        return device_list
-    except Exception as e:
-        st.error(f"Scan failed: {e}")
-        return []
-
 def simulate_scan():
-    """Return fake devices for simulation."""
     return [
         {"name": "Samsung TV (Mock)", "address": "00:11:22:33:44:55"},
         {"name": "LG TV (Mock)", "address": "66:77:88:99:AA:BB"},
@@ -101,9 +71,30 @@ def simulate_scan():
         {"name": "Hisense (Mock)", "address": "22:33:44:55:66:77"},
     ]
 
+def scan_devices_sync(force_sim=False):
+    """Scan for BLE devices. Returns list of dicts with name/address."""
+    if force_sim or not st.session_state.bleak_available:
+        return simulate_scan()
+    try:
+        devices = run_async(BleakScanner.discover())
+        if not devices:
+            return []
+        device_list = []
+        for d in devices:
+            name = getattr(d, 'name', None) or "Unknown"
+            address = getattr(d, 'address', None)
+            if not address:
+                address = str(d)
+            device_list.append({"name": name, "address": address})
+        return device_list
+    except Exception as e:
+        st.error(f"⚠️ Bluetooth scan failed: {e}")
+        st.warning("Switching to simulation mode. You can still test the interface.")
+        st.session_state.force_simulation = True
+        return simulate_scan()
+
 def connect_device_sync(address):
-    """Connect to a device and return client."""
-    if not st.session_state.bleak_available:
+    if st.session_state.force_simulation or not st.session_state.bleak_available:
         # Simulate connection
         st.session_state.is_connected = True
         st.session_state.services = {
@@ -130,7 +121,6 @@ def connect_device_sync(address):
         client = run_async(BleakClient(address))
         if client and client.is_connected:
             st.session_state.is_connected = True
-            # Discover services
             services = run_async(client.get_services())
             service_dict = {}
             for svc in services:
@@ -155,7 +145,7 @@ def connect_device_sync(address):
         return None
 
 def disconnect_device():
-    if st.session_state.client and st.session_state.bleak_available:
+    if st.session_state.client and st.session_state.bleak_available and not st.session_state.force_simulation:
         try:
             run_async(st.session_state.client.disconnect())
         except:
@@ -167,9 +157,7 @@ def disconnect_device():
     st.session_state.selected_char = None
 
 def send_command_sync(char_uuid, data):
-    """Send data to a characteristic."""
-    if not st.session_state.bleak_available or not st.session_state.is_connected:
-        # Simulate
+    if st.session_state.force_simulation or not st.session_state.bleak_available or not st.session_state.is_connected:
         st.session_state.command_history.append({
             "time": datetime.now().strftime("%H:%M:%S"),
             "char": char_uuid,
@@ -183,14 +171,11 @@ def send_command_sync(char_uuid, data):
         return False
 
     try:
-        # Convert data to bytes if string
         if isinstance(data, str):
             if data.startswith("0x") or data.startswith("0X"):
-                # Hex string
                 data = bytes.fromhex(data[2:])
             else:
                 data = data.encode('utf-8')
-        # Write
         run_async(st.session_state.client.write_gatt_char(char_uuid, data))
         st.session_state.command_history.append({
             "time": datetime.now().strftime("%H:%M:%S"),
@@ -205,25 +190,32 @@ def send_command_sync(char_uuid, data):
 
 # ---------- UI ----------
 st.title("📺 G Remote Universal")
-st.markdown("Control any Bluetooth‑enabled TV (or any BLE device) right from your computer.")
+st.markdown("Control any Bluetooth‑enabled TV (or any BLE device).")
 
-# Sidebar – Connection
+# Sidebar
 with st.sidebar:
-    st.header("🔗 Bluetooth Connection")
-    if st.session_state.bleak_available:
-        st.caption("Using real Bluetooth (bleak)")
+    st.header("🔗 Connection")
+    if st.session_state.bleak_available and not st.session_state.force_simulation:
+        st.caption("🟢 Real Bluetooth mode")
     else:
-        st.caption("⚠️ Simulation mode")
+        st.caption("🟡 Simulation mode")
 
-    # Scan
+    force_sim = st.checkbox("Force Simulation Mode", value=st.session_state.force_simulation)
+    if force_sim != st.session_state.force_simulation:
+        st.session_state.force_simulation = force_sim
+        if st.session_state.is_connected:
+            disconnect_device()
+        st.rerun()
+
     if st.button("🔄 Scan for Devices"):
         with st.spinner("Scanning..."):
-            devices = scan_devices_sync()  # now returns a list of dicts
+            devices = scan_devices_sync(force_sim)
             st.session_state.device_list = devices
             if not devices:
                 st.warning("No devices found. Try again.")
             else:
                 st.success(f"Found {len(devices)} devices")
+            st.session_state.scan_attempted = True
 
     if st.session_state.device_list:
         device_names = [f"{d['name']} ({d['address']})" for d in st.session_state.device_list]
@@ -239,22 +231,21 @@ with st.sidebar:
                         st.session_state.selected_device = selected
                         st.success("Connected!")
                         st.rerun()
+
     if st.session_state.is_connected:
         st.info(f"Connected to: {st.session_state.selected_device}")
         if st.button("🔌 Disconnect"):
             disconnect_device()
             st.rerun()
 
-# Main area
+# Main columns
 col1, col2 = st.columns([2, 1])
 
 with col1:
     if st.session_state.is_connected:
         st.subheader("📟 Remote Control")
-        # Display current status
         st.markdown(f"**TV:** {st.session_state.selected_device}")
 
-        # Services & Characteristics
         st.markdown("#### Services & Characteristics")
         if st.session_state.services:
             service_uuids = list(st.session_state.services.keys())
@@ -276,12 +267,9 @@ with col1:
         else:
             st.info("No services discovered (connect to a device to see them).")
 
-        # Command sending
         st.markdown("#### Send Command")
         if st.session_state.selected_char:
-            # Preset commands
             st.markdown("**Presets** (common media keys)")
-            preset_cols = st.columns(4)
             presets = {
                 "▶ Play": b"\x01",
                 "⏸ Pause": b"\x02",
@@ -304,7 +292,6 @@ with col1:
                 "8": b"\x38",
                 "9": b"\x39",
             }
-            # Show preset buttons in groups
             keys = list(presets.keys())
             for i in range(0, len(keys), 4):
                 cols = st.columns(4)
@@ -313,7 +300,6 @@ with col1:
                         if st.button(key, key=f"preset_{key}"):
                             send_command_sync(st.session_state.selected_char, presets[key])
             st.divider()
-            # Custom command
             st.markdown("**Custom Command**")
             custom_input = st.text_input("Data (text or hex with 0x prefix)", key="custom_data")
             if st.button("Send Custom"):
@@ -324,7 +310,6 @@ with col1:
         else:
             st.info("Select a characteristic first.")
 
-        # Command history
         st.markdown("#### Command History")
         if st.session_state.command_history:
             for entry in st.session_state.command_history[-10:]:
@@ -339,22 +324,20 @@ with col2:
     if st.session_state.is_connected:
         st.write("**Connected Device:**", st.session_state.selected_device)
         st.write("**Services:**", len(st.session_state.services))
-        st.write("**Bluetooth:**", "Real" if st.session_state.bleak_available else "Simulated")
+        st.write("**Mode:**", "Real Bluetooth" if (st.session_state.bleak_available and not st.session_state.force_simulation) else "Simulation")
     else:
         st.warning("Not connected.")
 
     st.divider()
     st.subheader("📋 Programming Tips")
     st.markdown("""
-    - To control a TV, you need to know the correct **Service UUID** and **Characteristic UUID**.
-    - Many TVs use **HID over GATT** (Human Interface Device) for remote control.  
-      The service UUID is often `00001812-0000-1000-8000-00805f9b34fb`.
-    - The characteristic for **Report** is usually `00002a4d-0000-1000-8000-00805f9b34fb`.
-    - You may need to send **Report IDs** (first byte) to specify which key.
-    - Experiment with the presets above – they send simple byte codes that many devices understand.
-    - Check your TV's manual or look for online documentation for the correct UUIDs and command formats.
+    - **Real Bluetooth** works only when you run this app **locally**.
+    - On **Streamlit Cloud** or when scanning fails, the app uses **simulation** – you can still test the UI.
+    - To control a real TV, find the correct **Service** and **Characteristic** UUIDs.
+    - Common HID service: `00001812-0000-1000-8000-00805f9b34fb`  
+      Report characteristic: `00002a4d-0000-1000-8000-00805f9b34fb`.
+    - Preset buttons send simple byte codes that many devices understand.
     """)
 
-# Footer
 st.divider()
-st.caption("G Remote Universal v2.0 – Real Bluetooth via bleak. Connect locally to control your TV.")
+st.caption("G Remote Universal v2.1 – Real Bluetooth via bleak, with automatic fallback to simulation.")
