@@ -12,6 +12,7 @@ import random
 import threading
 import time
 from datetime import datetime
+import os
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(page_title="G Remote Universal", page_icon="📺", layout="wide")
@@ -38,14 +39,24 @@ if "command_history" not in st.session_state:
 if "bleak_available" not in st.session_state:
     st.session_state.bleak_available = False
 
-# ---------- CHECK BLEAK ----------
-try:
-    import bleak
-    from bleak import BleakScanner, BleakClient
-    st.session_state.bleak_available = True
-except ImportError:
+# ---------- ENVIRONMENT CHECK ----------
+def is_running_on_streamlit_cloud():
+    """Detect if running on Streamlit Cloud (or similar remote)."""
+    return 'STREAMLIT_SERVER' in os.environ or 'STREAMLIT_CLOUD' in os.environ
+
+if is_running_on_streamlit_cloud():
+    st.warning("🌐 You are running on Streamlit Cloud. Bluetooth is not available. This app will work in simulation mode only.")
+    st.info("To control a real TV, clone the repository and run the app locally on your computer.")
     st.session_state.bleak_available = False
-    st.warning("⚠️ 'bleak' not installed. Running in simulation mode. Install with: pip install bleak")
+else:
+    try:
+        import bleak
+        from bleak import BleakScanner, BleakClient
+        st.session_state.bleak_available = True
+    except ImportError:
+        st.warning("⚠️ 'bleak' is not installed. Install it with: pip install bleak")
+        st.info("If you are running locally, install it and restart the app to enable real Bluetooth.")
+        st.session_state.bleak_available = False
 
 # ---------- HELPER FUNCTIONS ----------
 def run_async(coro):
