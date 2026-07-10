@@ -217,6 +217,15 @@ with st.sidebar:
     st.components.v1.html(web_bt_component(), height=450, scrolling=True)
     st.divider()
     st.info("💡 **Tips:**\n- Ensure your TV is in **discoverable/pairing mode**.\n- If you cancel the picker, just click **Scan** again.\n- Select a **Service**, then a **Characteristic** to send commands.")
+    st.warning("""
+    **📌 Multiple Remote Connections**
+    - Most modern TVs support **multiple Bluetooth connections**.
+    - You can connect this remote **while the original remote is still paired**.
+    - If the TV does not appear in the scan, you may need to:
+      1. Put the TV into **Bluetooth pairing mode** (check TV settings).
+      2. Restart the TV's Bluetooth or power cycle it.
+    - Even if the TV shows "already paired", you can still select it and connect.
+    """)
 
 col1, col2 = st.columns([2,1])
 
@@ -311,6 +320,14 @@ with col1:
         4. The TV may ask to confirm pairing – accept it.
         5. Once connected, services and characteristics appear.
         6. Pick a characteristic and send commands.
+        
+        ### 🔄 Already paired with another remote?
+        - This app can connect **simultaneously** with your existing remote.
+        - If the TV doesn't appear in the scan:
+          - Put the TV into **Bluetooth pairing mode** (Settings → Bluetooth → Add device).
+          - Power cycle the TV's Bluetooth (turn off/on).
+          - Scan again.
+        - Once connected, both remotes will work together.
         """)
 
 with col2:
