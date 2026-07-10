@@ -70,12 +70,24 @@ def run_async(coro):
         return None
 
 def scan_devices_sync():
-    """Scan for BLE devices (synchronous wrapper)."""
+    """Scan for BLE devices (synchronous wrapper). Returns a list of dicts."""
     if not st.session_state.bleak_available:
         return simulate_scan()
     try:
         devices = run_async(BleakScanner.discover())
-        return devices
+        if not devices:
+            return []
+        # Convert to list of dicts, handling possible missing attributes
+        device_list = []
+        for d in devices:
+            # Use getattr to safely access attributes
+            name = getattr(d, 'name', None) or "Unknown"
+            address = getattr(d, 'address', None)
+            if not address:
+                # Some versions may use 'address' or 'device.address'
+                address = getattr(d, 'address', str(d))
+            device_list.append({"name": name, "address": address})
+        return device_list
     except Exception as e:
         st.error(f"Scan failed: {e}")
         return []
@@ -206,15 +218,12 @@ with st.sidebar:
     # Scan
     if st.button("🔄 Scan for Devices"):
         with st.spinner("Scanning..."):
-            if st.session_state.bleak_available:
-                devices = scan_devices_sync()
-                st.session_state.device_list = [{"name": d.name or "Unknown", "address": d.address} for d in devices]
-            else:
-                st.session_state.device_list = scan_devices_sync()
-            if not st.session_state.device_list:
+            devices = scan_devices_sync()  # now returns a list of dicts
+            st.session_state.device_list = devices
+            if not devices:
                 st.warning("No devices found. Try again.")
             else:
-                st.success(f"Found {len(st.session_state.device_list)} devices")
+                st.success(f"Found {len(devices)} devices")
 
     if st.session_state.device_list:
         device_names = [f"{d['name']} ({d['address']})" for d in st.session_state.device_list]
