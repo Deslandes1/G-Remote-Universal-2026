@@ -48,7 +48,7 @@ BATTERY_SERVICE = "0000180f-0000-1000-8000-00805f9b34fb"
 # ---------- WEB BLUETOOTH COMPONENT ----------
 def web_bt_component():
     return f"""
-    <div id="bt-status" style="margin-bottom:10px;">🔍 Click 'Scan' to connect</div>
+    <div id="bt-status" style="margin-bottom:10px;">🔍 Click 'Scan' to see all nearby BLE devices</div>
     <button id="scan-btn" onclick="scan()">🔍 Scan for Devices</button>
     <button id="disconnect-btn" onclick="disconnect()" style="display:none;">🔌 Disconnect</button>
     <div id="device-info" style="margin-top:10px;"></div>
@@ -86,8 +86,10 @@ def web_bt_component():
             }}
             try {{
                 document.getElementById('scan-btn').disabled = true;
-                updateStatus('🔍 Scanning...');
+                updateStatus('🔍 Scanning for devices...');
                 
+                // This will show a picker with all devices that advertise Generic Access service
+                // – which is most BLE devices (TVs, phones, headphones, etc.)
                 device = await navigator.bluetooth.requestDevice({{
                     filters: [{{ services: [GENERIC_ACCESS] }}],
                     optionalServices: [GENERIC_ACCESS, GENERIC_ATTRIBUTE, DEVICE_INFO, HID_SERVICE, BATTERY_SERVICE]
@@ -210,20 +212,24 @@ def web_bt_component():
 
 # ---------- MAIN UI ----------
 st.title("📺 G Remote Universal")
-st.markdown("Control any Bluetooth TV using Web Bluetooth (Chrome/Edge).")
+st.markdown("Control any Bluetooth LE device (TV, speakers, etc.) using Web Bluetooth.")
 
 with st.sidebar:
     st.header("🔗 Connection")
     st.components.v1.html(web_bt_component(), height=450, scrolling=True)
     st.divider()
-    st.info("💡 **Correct procedure:**\n\n"
-            "1. **On your TV:** go to **Settings → Bluetooth** and make sure it is **discoverable** (do NOT start a scan from the TV).\n"
-            "2. **In the app:** click **Scan** – your computer will search for devices.\n"
-            "3. **Select your TV** from the list (look for its model name).\n"
-            "4. The TV will ask to confirm pairing – accept it.\n\n"
-            "**The list you see on the TV screen (like 'ios') is the TV scanning for other devices – ignore it.**")
+    st.info("💡 **How it works:**\n\n"
+            "1. **Click 'Scan for Devices'** – your browser will show a list of all nearby BLE devices.\n"
+            "2. **Select your device** from the list (look for its name).\n"
+            "3. The app connects and shows available **services & characteristics**.\n"
+            "4. Choose a characteristic and send commands.\n\n"
+            "⚠️ **If your device does not appear:**\n"
+            "- Ensure it is in **discoverable/pairing mode**.\n"
+            "- Some devices only appear when they are not already connected to something else.\n"
+            "- Refresh the page and scan again.")
+
     st.warning("📌 **Already paired with another remote?**\n\n"
-               "You can still connect this app as a second remote. Most TVs support multiple Bluetooth connections simultaneously.")
+               "Most devices support multiple BLE connections – you can connect this app as an additional remote without disconnecting the first one.")
 
 col1, col2 = st.columns([2,1])
 
@@ -309,37 +315,37 @@ with col1:
                     st.text(f"[{entry['time']}] {entry['data']}")
         except: pass
     else:
-        st.info("🔌 Click **'Scan for Devices'** in the sidebar to connect to your TV.")
+        st.info("🔌 Click **'Scan for Devices'** in the sidebar to discover and connect to any Bluetooth device.")
         st.markdown("""
-        ### ℹ️ How to pair (correct way)
-        1. **On the TV:** go to **Settings → Bluetooth** and **make it discoverable** (usually it's already visible; if not, select "Add device" or "Pair new device").
-        2. **Do NOT start a scan from the TV** – that only shows nearby phones, not the TV itself.
-        3. **On your computer:** click the **Scan** button in the app.
-        4. A browser picker appears showing all nearby Bluetooth devices.
-        5. **Select your TV** from that list (it will show its model name).
-        6. The TV will ask to confirm pairing – accept it.
-        7. You are now connected and can send commands.
+        ### ℹ️ How to scan and connect
+        1. **On the device you want to control** (TV, speaker, etc.):  
+           - Make it **discoverable** (usually in Bluetooth settings).  
+           - **Do NOT start a scan from the device** – that only shows other devices, not itself.
+        2. **In this app:** click **Scan for Devices**.
+        3. A browser picker will appear showing **all nearby BLE devices**.
+        4. **Select your device** by its name – it might be the TV model, speaker brand, etc.
+        5. Confirm pairing if prompted.
+        6. Once connected, you'll see the services and characteristics – pick one and send commands.
 
         ### 🔄 Already paired with another remote?
-        - You can connect this app **without disconnecting** the original remote.
-        - Most modern TVs support multiple simultaneous Bluetooth connections.
-        - Just follow the steps above – the TV will allow a new pairing.
+        - Most devices allow multiple connections. You can add this remote **without disconnecting** the original one.
+        - Just scan and connect as above – the device will handle multiple pairings.
         """)
 
 with col2:
     st.subheader("📋 Quick Guide")
     st.markdown("""
     - **Browser:** Chrome 56+, Edge 79+
-    - **TV must support Bluetooth LE (BLE)**
+    - **Device must support BLE (Bluetooth Low Energy)**
     - **Common HID service:**  
       `00001812-0000-1000-8000-00805f9b34fb`  
       **Report characteristic:**  
       `00002a4d-0000-1000-8000-00805f9b34fb`
-    - The preset commands send standard HID key codes (0x01 = Play, 0x02 = Pause, etc.)
-    - If the TV doesn't respond, try the **HID service** and the **Report** characteristic.
+    - Preset commands are standard HID key codes (0x01 = Play, etc.).
+    - If the device doesn't respond, try the **HID service** and **Report** characteristic.
     - **Troubleshooting:**  
       - Refresh the page if the picker doesn't appear.  
-      - Ensure no other Bluetooth app is using the device.
+      - Ensure the device is in discoverable mode.
     """)
 
 st.divider()
