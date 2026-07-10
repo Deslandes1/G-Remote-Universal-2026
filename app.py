@@ -1,279 +1,340 @@
+"""
+G Remote Universal – Bluetooth TV Remote Control
+- Uses 'bleak' for real Bluetooth communication (local machine only)
+- Falls back to simulation if bleak is not available
+- Scan, connect, explore services, and send commands
+"""
+
 import streamlit as st
+import asyncio
 import json
 import random
+import threading
+import time
+from datetime import datetime
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(page_title="G Remote Universal", page_icon="📺", layout="wide")
 
-# ---------- DEFAULT CHANNEL DATA ----------
-# This is a simplified channel list per country.
-# In production, you would fetch this from an external API or a larger database.
-CHANNELS = {
-    "US": [
-        {"number": 2, "name": "CBS"},
-        {"number": 4, "name": "NBC"},
-        {"number": 5, "name": "FOX"},
-        {"number": 7, "name": "ABC"},
-        {"number": 9, "name": "PBS"},
-        {"number": 11, "name": "CW"},
-        {"number": 13, "name": "MyNetworkTV"},
-        {"number": 25, "name": "CNN"},
-        {"number": 30, "name": "ESPN"},
-        {"number": 35, "name": "MTV"},
-        {"number": 42, "name": "Discovery"},
-        {"number": 50, "name": "History"},
-        {"number": 60, "name": "TLC"},
-        {"number": 70, "name": "AMC"},
-        {"number": 80, "name": "HBO"},
-        {"number": 90, "name": "Showtime"},
-    ],
-    "UK": [
-        {"number": 1, "name": "BBC One"},
-        {"number": 2, "name": "BBC Two"},
-        {"number": 3, "name": "ITV"},
-        {"number": 4, "name": "Channel 4"},
-        {"number": 5, "name": "Channel 5"},
-        {"number": 6, "name": "Sky News"},
-        {"number": 7, "name": "Sky Sports"},
-        {"number": 8, "name": "E4"},
-        {"number": 9, "name": "More4"},
-        {"number": 10, "name": "Dave"},
-        {"number": 20, "name": "BBC News"},
-        {"number": 30, "name": "CBBC"},
-        {"number": 40, "name": "CBeebies"},
-    ],
-    "FR": [
-        {"number": 1, "name": "TF1"},
-        {"number": 2, "name": "France 2"},
-        {"number": 3, "name": "France 3"},
-        {"number": 4, "name": "Canal+"},
-        {"number": 5, "name": "France 5"},
-        {"number": 6, "name": "M6"},
-        {"number": 7, "name": "Arte"},
-        {"number": 8, "name": "C8"},
-        {"number": 9, "name": "W9"},
-        {"number": 10, "name": "TMC"},
-        {"number": 20, "name": "BFM TV"},
-        {"number": 30, "name": "LCI"},
-        {"number": 40, "name": "France Info"},
-    ],
-    "HT": [  # Haiti
-        {"number": 1, "name": "TNH"},
-        {"number": 2, "name": "Métropole"},
-        {"number": 3, "name": "Canal 11"},
-        {"number": 4, "name": "Télé Haïti"},
-        {"number": 5, "name": "Radio Télévision Caraïbes"},
-        {"number": 6, "name": "Scoop FM"},
-        {"number": 7, "name": "Magik 9"},
-        {"number": 8, "name": "Haiti TV"},
-    ],
-}
-
 # ---------- SESSION STATE ----------
-if "tv_connected" not in st.session_state:
-    st.session_state.tv_connected = False
-if "current_channel" not in st.session_state:
-    st.session_state.current_channel = 1
-if "custom_channels" not in st.session_state:
-    st.session_state.custom_channels = {}  # key: number, value: channel name
-if "selected_country" not in st.session_state:
-    st.session_state.selected_country = "US"
-if "selected_brand" not in st.session_state:
-    st.session_state.selected_brand = "Samsung"
-if "volume" not in st.session_state:
-    st.session_state.volume = 50
-if "muted" not in st.session_state:
-    st.session_state.muted = False
+if "device_list" not in st.session_state:
+    st.session_state.device_list = []
+if "selected_device" not in st.session_state:
+    st.session_state.selected_device = None
+if "is_connected" not in st.session_state:
+    st.session_state.is_connected = False
+if "client" not in st.session_state:
+    st.session_state.client = None
+if "services" not in st.session_state:
+    st.session_state.services = {}
+if "selected_service" not in st.session_state:
+    st.session_state.selected_service = None
+if "selected_char" not in st.session_state:
+    st.session_state.selected_char = None
+if "custom_command" not in st.session_state:
+    st.session_state.custom_command = ""
+if "command_history" not in st.session_state:
+    st.session_state.command_history = []
+if "bleak_available" not in st.session_state:
+    st.session_state.bleak_available = False
+
+# ---------- CHECK BLEAK ----------
+try:
+    import bleak
+    from bleak import BleakScanner, BleakClient
+    st.session_state.bleak_available = True
+except ImportError:
+    st.session_state.bleak_available = False
+    st.warning("⚠️ 'bleak' not installed. Running in simulation mode. Install with: pip install bleak")
 
 # ---------- HELPER FUNCTIONS ----------
-def get_channel_name(number, country):
-    """Return the channel name for a given number, checking custom mappings first."""
-    if number in st.session_state.custom_channels:
-        return st.session_state.custom_channels[number]
-    channels = CHANNELS.get(country, [])
-    for ch in channels:
-        if ch["number"] == number:
-            return ch["name"]
-    return "Unknown"
+def run_async(coro):
+    """Run an async coroutine in a new event loop."""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    except Exception as e:
+        st.error(f"Async error: {e}")
+        return None
 
-def get_channel_list(country):
-    """Return the full list of channels for the country, with custom overrides."""
-    base = CHANNELS.get(country, [])
-    # Add custom channels if they are not already in base
-    existing_numbers = {ch["number"] for ch in base}
-    for num, name in st.session_state.custom_channels.items():
-        if num not in existing_numbers:
-            base.append({"number": num, "name": name})
-    return sorted(base, key=lambda x: x["number"])
+def scan_devices_sync():
+    """Scan for BLE devices (synchronous wrapper)."""
+    if not st.session_state.bleak_available:
+        return simulate_scan()
+    try:
+        devices = run_async(BleakScanner.discover())
+        return devices
+    except Exception as e:
+        st.error(f"Scan failed: {e}")
+        return []
 
-def set_channel(number):
-    if 0 <= number <= 999:  # Allow up to 999
-        st.session_state.current_channel = number
-        st.success(f"Tuned to channel {number}: {get_channel_name(number, st.session_state.selected_country)}")
-    else:
-        st.warning("Channel number out of range (0-999)")
+def simulate_scan():
+    """Return fake devices for simulation."""
+    return [
+        {"name": "Samsung TV (Mock)", "address": "00:11:22:33:44:55"},
+        {"name": "LG TV (Mock)", "address": "66:77:88:99:AA:BB"},
+        {"name": "Sony TV (Mock)", "address": "CC:DD:EE:FF:00:11"},
+        {"name": "Hisense (Mock)", "address": "22:33:44:55:66:77"},
+    ]
 
-def change_channel(delta):
-    new_num = st.session_state.current_channel + delta
-    if new_num < 0:
-        new_num = 0
-    if new_num > 999:
-        new_num = 999
-    set_channel(new_num)
-
-# ---------- MAIN UI ----------
-st.title("📺 G Remote Universal")
-st.markdown("Control any flatscreen TV via Bluetooth – program channels for your country.")
-
-# ---- Sidebar ----
-with st.sidebar:
-    st.header("🔧 Settings")
-    brand = st.selectbox("TV Brand", ["Samsung", "LG", "Sony", "Panasonic", "TCL", "Hisense", "Other"],
-                         index=0, key="brand_select")
-    if brand != st.session_state.selected_brand:
-        st.session_state.selected_brand = brand
-
-    country = st.selectbox("Country", list(CHANNELS.keys()), index=list(CHANNELS.keys()).index(st.session_state.selected_country),
-                           key="country_select")
-    if country != st.session_state.selected_country:
-        st.session_state.selected_country = country
-        # Reset current channel to first available
-        channels = get_channel_list(country)
-        if channels:
-            st.session_state.current_channel = channels[0]["number"]
-        else:
-            st.session_state.current_channel = 1
-
-    st.divider()
-    st.header("📡 Connection")
-    if st.button("🔗 Connect Bluetooth"):
+def connect_device_sync(address):
+    """Connect to a device and return client."""
+    if not st.session_state.bleak_available:
         # Simulate connection
-        st.session_state.tv_connected = True
-        st.success("Bluetooth connected to TV!")
-    if st.button("🔌 Disconnect"):
-        st.session_state.tv_connected = False
-        st.warning("Disconnected")
-    st.write(f"Status: {'✅ Connected' if st.session_state.tv_connected else '❌ Disconnected'}")
+        st.session_state.is_connected = True
+        st.session_state.services = {
+            "00001800-0000-1000-8000-00805f9b34fb": {
+                "name": "Generic Access",
+                "characteristics": [
+                    {"uuid": "00002a00-0000-1000-8000-00805f9b34fb", "name": "Device Name"},
+                ]
+            },
+            "00001801-0000-1000-8000-00805f9b34fb": {
+                "name": "Generic Attribute",
+                "characteristics": []
+            },
+            "0000180a-0000-1000-8000-00805f9b34fb": {
+                "name": "Device Information",
+                "characteristics": [
+                    {"uuid": "00002a29-0000-1000-8000-00805f9b34fb", "name": "Manufacturer Name"},
+                ]
+            }
+        }
+        return "simulated_client"
 
-# ---- Main area ----
+    try:
+        client = run_async(BleakClient(address))
+        if client and client.is_connected:
+            st.session_state.is_connected = True
+            # Discover services
+            services = run_async(client.get_services())
+            service_dict = {}
+            for svc in services:
+                chars = []
+                for char in svc.characteristics:
+                    chars.append({
+                        "uuid": char.uuid,
+                        "name": char.description or char.uuid,
+                        "properties": char.properties
+                    })
+                service_dict[svc.uuid] = {
+                    "name": svc.description or svc.uuid,
+                    "characteristics": chars
+                }
+            st.session_state.services = service_dict
+            return client
+        else:
+            st.error("Connection failed")
+            return None
+    except Exception as e:
+        st.error(f"Connection error: {e}")
+        return None
+
+def disconnect_device():
+    if st.session_state.client and st.session_state.bleak_available:
+        try:
+            run_async(st.session_state.client.disconnect())
+        except:
+            pass
+    st.session_state.is_connected = False
+    st.session_state.client = None
+    st.session_state.services = {}
+    st.session_state.selected_service = None
+    st.session_state.selected_char = None
+
+def send_command_sync(char_uuid, data):
+    """Send data to a characteristic."""
+    if not st.session_state.bleak_available or not st.session_state.is_connected:
+        # Simulate
+        st.session_state.command_history.append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "char": char_uuid,
+            "data": data
+        })
+        st.success(f"📤 Sent (simulated): {data}")
+        return True
+
+    if not st.session_state.client:
+        st.error("Not connected")
+        return False
+
+    try:
+        # Convert data to bytes if string
+        if isinstance(data, str):
+            if data.startswith("0x") or data.startswith("0X"):
+                # Hex string
+                data = bytes.fromhex(data[2:])
+            else:
+                data = data.encode('utf-8')
+        # Write
+        run_async(st.session_state.client.write_gatt_char(char_uuid, data))
+        st.session_state.command_history.append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "char": char_uuid,
+            "data": data.hex() if isinstance(data, bytes) else str(data)
+        })
+        st.success("✅ Command sent!")
+        return True
+    except Exception as e:
+        st.error(f"Send error: {e}")
+        return False
+
+# ---------- UI ----------
+st.title("📺 G Remote Universal")
+st.markdown("Control any Bluetooth‑enabled TV (or any BLE device) right from your computer.")
+
+# Sidebar – Connection
+with st.sidebar:
+    st.header("🔗 Bluetooth Connection")
+    if st.session_state.bleak_available:
+        st.caption("Using real Bluetooth (bleak)")
+    else:
+        st.caption("⚠️ Simulation mode")
+
+    # Scan
+    if st.button("🔄 Scan for Devices"):
+        with st.spinner("Scanning..."):
+            if st.session_state.bleak_available:
+                devices = scan_devices_sync()
+                st.session_state.device_list = [{"name": d.name or "Unknown", "address": d.address} for d in devices]
+            else:
+                st.session_state.device_list = scan_devices_sync()
+            if not st.session_state.device_list:
+                st.warning("No devices found. Try again.")
+            else:
+                st.success(f"Found {len(st.session_state.device_list)} devices")
+
+    if st.session_state.device_list:
+        device_names = [f"{d['name']} ({d['address']})" for d in st.session_state.device_list]
+        selected = st.selectbox("Select a device", device_names)
+        if selected:
+            idx = device_names.index(selected)
+            addr = st.session_state.device_list[idx]["address"]
+            if st.button("🔗 Connect"):
+                with st.spinner(f"Connecting to {selected}..."):
+                    client = connect_device_sync(addr)
+                    if client:
+                        st.session_state.client = client
+                        st.session_state.selected_device = selected
+                        st.success("Connected!")
+                        st.rerun()
+    if st.session_state.is_connected:
+        st.info(f"Connected to: {st.session_state.selected_device}")
+        if st.button("🔌 Disconnect"):
+            disconnect_device()
+            st.rerun()
+
+# Main area
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.subheader("📟 Remote Control")
-    # Display current channel info
-    if st.session_state.tv_connected:
-        ch_name = get_channel_name(st.session_state.current_channel, st.session_state.selected_country)
-        st.markdown(f"### 📺 Now Playing: **{ch_name}** (Channel {st.session_state.current_channel})")
-        # Volume bar
-        vol_col1, vol_col2 = st.columns([3, 1])
-        with vol_col1:
-            new_vol = st.slider("Volume", 0, 100, st.session_state.volume, key="vol_slider")
-            if new_vol != st.session_state.volume:
-                st.session_state.volume = new_vol
-        with vol_col2:
-            if st.button("🔇 Mute"):
-                st.session_state.muted = not st.session_state.muted
-                st.rerun()
-            st.write("Muted" if st.session_state.muted else "Unmuted")
+    if st.session_state.is_connected:
+        st.subheader("📟 Remote Control")
+        # Display current status
+        st.markdown(f"**TV:** {st.session_state.selected_device}")
+
+        # Services & Characteristics
+        st.markdown("#### Services & Characteristics")
+        if st.session_state.services:
+            service_uuids = list(st.session_state.services.keys())
+            if service_uuids:
+                sel_svc = st.selectbox("Service", service_uuids, 
+                                       format_func=lambda u: f"{st.session_state.services[u]['name']} ({u[:8]})")
+                if sel_svc:
+                    st.session_state.selected_service = sel_svc
+                    chars = st.session_state.services[sel_svc]["characteristics"]
+                    if chars:
+                        char_options = [f"{c['name']} ({c['uuid'][:8]})" for c in chars]
+                        sel_char_idx = st.selectbox("Characteristic", range(len(chars)), format_func=lambda i: char_options[i])
+                        st.session_state.selected_char = chars[sel_char_idx]["uuid"]
+                        st.write(f"Selected: {chars[sel_char_idx]['name']} ({chars[sel_char_idx]['uuid']})")
+                    else:
+                        st.info("No characteristics in this service.")
+            else:
+                st.info("No services found.")
+        else:
+            st.info("No services discovered (connect to a device to see them).")
+
+        # Command sending
+        st.markdown("#### Send Command")
+        if st.session_state.selected_char:
+            # Preset commands
+            st.markdown("**Presets** (common media keys)")
+            preset_cols = st.columns(4)
+            presets = {
+                "▶ Play": b"\x01",
+                "⏸ Pause": b"\x02",
+                "⏹ Stop": b"\x03",
+                "⏭ Next": b"\x04",
+                "⏮ Prev": b"\x05",
+                "🔊 Vol Up": b"\x06",
+                "🔉 Vol Down": b"\x07",
+                "🔇 Mute": b"\x08",
+                "CH+": b"\x09",
+                "CH-": b"\x0a",
+                "0": b"\x30",
+                "1": b"\x31",
+                "2": b"\x32",
+                "3": b"\x33",
+                "4": b"\x34",
+                "5": b"\x35",
+                "6": b"\x36",
+                "7": b"\x37",
+                "8": b"\x38",
+                "9": b"\x39",
+            }
+            # Show preset buttons in groups
+            keys = list(presets.keys())
+            for i in range(0, len(keys), 4):
+                cols = st.columns(4)
+                for j, key in enumerate(keys[i:i+4]):
+                    with cols[j]:
+                        if st.button(key, key=f"preset_{key}"):
+                            send_command_sync(st.session_state.selected_char, presets[key])
+            st.divider()
+            # Custom command
+            st.markdown("**Custom Command**")
+            custom_input = st.text_input("Data (text or hex with 0x prefix)", key="custom_data")
+            if st.button("Send Custom"):
+                if custom_input:
+                    send_command_sync(st.session_state.selected_char, custom_input)
+                else:
+                    st.warning("Enter data.")
+        else:
+            st.info("Select a characteristic first.")
+
+        # Command history
+        st.markdown("#### Command History")
+        if st.session_state.command_history:
+            for entry in st.session_state.command_history[-10:]:
+                st.text(f"[{entry['time']}] {entry['char'][:8]} -> {entry['data']}")
+        else:
+            st.caption("No commands sent yet.")
     else:
-        st.info("Connect to TV to control it.")
-
-    # Remote buttons
-    if st.session_state.tv_connected:
-        st.markdown("#### Buttons")
-        col_pwr, col_input, col_menu = st.columns(3)
-        with col_pwr:
-            if st.button("⏻ Power"):
-                st.info("Power toggled (simulated)")
-        with col_input:
-            if st.button("Source"):
-                st.info("Input source menu (simulated)")
-        with col_menu:
-            if st.button("☰ Menu"):
-                st.info("Menu opened (simulated)")
-
-        # Number pad
-        st.markdown("#### Number Pad")
-        num_cols = st.columns(5)
-        numbers = ["1","2","3","4","5","6","7","8","9","0"]
-        for i, num in enumerate(numbers):
-            with num_cols[i % 5]:
-                if st.button(num, key=f"num_{num}"):
-                    # For simplicity, just set channel to the number (single digit)
-                    # In real remotes, you'd accumulate digits; we'll just set direct.
-                    try:
-                        set_channel(int(num))
-                    except:
-                        pass
-        # Channel up/down
-        ch_col1, ch_col2 = st.columns(2)
-        with ch_col1:
-            if st.button("CH ▲"):
-                change_channel(1)
-        with ch_col2:
-            if st.button("CH ▼"):
-                change_channel(-1)
-
-        # Additional buttons
-        st.markdown("#### Other")
-        extra_cols = st.columns(4)
-        with extra_cols[0]:
-            if st.button("⬆ Up"):
-                st.info("Up")
-        with extra_cols[1]:
-            if st.button("⬇ Down"):
-                st.info("Down")
-        with extra_cols[2]:
-            if st.button("⬅ Left"):
-                st.info("Left")
-        with extra_cols[3]:
-            if st.button("➡ Right"):
-                st.info("Right")
-        if st.button("OK/Select"):
-            st.info("OK pressed")
-    else:
-        st.warning("Please connect to the TV first.")
+        st.info("Connect to a TV using the sidebar to start controlling it.")
 
 with col2:
-    st.subheader("📋 Channel Programming")
-    st.markdown(f"**Country:** {st.session_state.selected_country}")
-    st.markdown("#### Available Channels")
-    channels = get_channel_list(st.session_state.selected_country)
-    if not channels:
-        st.info("No channels for this country.")
+    st.subheader("⚙️ Device Info")
+    if st.session_state.is_connected:
+        st.write("**Connected Device:**", st.session_state.selected_device)
+        st.write("**Services:**", len(st.session_state.services))
+        st.write("**Bluetooth:**", "Real" if st.session_state.bleak_available else "Simulated")
     else:
-        # Show channel list with ability to assign custom names
-        for ch in channels:
-            col_a, col_b, col_c = st.columns([1, 3, 2])
-            with col_a:
-                st.write(f"**{ch['number']}**")
-            with col_b:
-                st.write(ch['name'])
-            with col_c:
-                if st.button("✏️", key=f"edit_{ch['number']}"):
-                    # Open a popover for editing
-                    with st.popover(f"Edit channel {ch['number']}"):
-                        new_name = st.text_input("Channel name", value=ch['name'])
-                        if st.button("Save"):
-                            st.session_state.custom_channels[ch['number']] = new_name
-                            st.rerun()
-        # Add custom channel
-        st.markdown("#### Add Custom Channel")
-        with st.form("add_channel"):
-            new_num = st.number_input("Channel number", min_value=0, max_value=999, step=1, value=100)
-            new_name = st.text_input("Channel name")
-            if st.form_submit_button("Add"):
-                if new_name.strip():
-                    st.session_state.custom_channels[new_num] = new_name.strip()
-                    st.rerun()
-                else:
-                    st.warning("Please enter a name.")
+        st.warning("Not connected.")
 
-    # Reset custom channels
-    if st.button("Reset All Custom Channels"):
-        st.session_state.custom_channels = {}
-        st.rerun()
+    st.divider()
+    st.subheader("📋 Programming Tips")
+    st.markdown("""
+    - To control a TV, you need to know the correct **Service UUID** and **Characteristic UUID**.
+    - Many TVs use **HID over GATT** (Human Interface Device) for remote control.  
+      The service UUID is often `00001812-0000-1000-8000-00805f9b34fb`.
+    - The characteristic for **Report** is usually `00002a4d-0000-1000-8000-00805f9b34fb`.
+    - You may need to send **Report IDs** (first byte) to specify which key.
+    - Experiment with the presets above – they send simple byte codes that many devices understand.
+    - Check your TV's manual or look for online documentation for the correct UUIDs and command formats.
+    """)
 
 # Footer
 st.divider()
-st.caption("G Remote Universal v1.0 – Simulated Bluetooth remote control. For demonstration only.")
+st.caption("G Remote Universal v2.0 – Real Bluetooth via bleak. Connect locally to control your TV.")
