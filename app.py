@@ -37,6 +37,8 @@ if "selected_char" not in st.session_state:
     st.session_state.selected_char = None
 if "command_history" not in st.session_state:
     st.session_state.command_history = []
+if "simulation_mode" not in st.session_state:
+    st.session_state.simulation_mode = False
 
 # ---------- FULL UUID CONSTANTS ----------
 GENERIC_ACCESS = "00001800-0000-1000-8000-00805f9b34fb"
@@ -120,8 +122,13 @@ def web_bt_component():
                     document.getElementById('device-info').innerHTML = `✅ Connected to: ${{device.name}}`;
                 }}
             }} catch (err) {{
-                alert('Error: ' + err.message);
-                updateStatus('Error: ' + err.message);
+                // Handle user cancellation gracefully
+                if (err.message && (err.message.includes('cancelled') || err.message.includes('cancel'))) {{
+                    updateStatus('Scan cancelled by user');
+                }} else {{
+                    alert('Error: ' + err.message);
+                    updateStatus('Error: ' + err.message);
+                }}
             }} finally {{
                 document.getElementById('scan-btn').disabled = false;
             }}
@@ -205,7 +212,14 @@ st.markdown("Control any Bluetooth TV using Web Bluetooth (Chrome/Edge).")
 with st.sidebar:
     st.header("🔗 Connection")
     st.components.v1.html(web_bt_component(), height=400, scrolling=True)
-    if st.button("🔄 Force Rerun"):
+    
+    st.divider()
+    simulation = st.checkbox("Simulation Mode (no Bluetooth)", value=st.session_state.simulation_mode)
+    if simulation != st.session_state.simulation_mode:
+        st.session_state.simulation_mode = simulation
+        st.rerun()
+    
+    if st.button("🔄 Refresh State"):
         st.rerun()
 
 col1, col2 = st.columns([2,1])
@@ -229,6 +243,28 @@ with col1:
     else:
         st.session_state.is_connected = False
         st.session_state.device_name = None
+
+    if st.session_state.simulation_mode:
+        st.info("🧪 Simulation Mode: The interface works but commands won't reach a real device.")
+        # Show a mock connection for testing
+        if not st.session_state.is_connected:
+            if st.button("Simulate Connect"):
+                st.session_state.is_connected = True
+                st.session_state.device_name = "Mock TV"
+                st.session_state.services = {
+                    "00001800-0000-1000-8000-00805f9b34fb": {
+                        "characteristics": [
+                            {"uuid": "00002a00-0000-1000-8000-00805f9b34fb", "properties": ["read"]}
+                        ]
+                    }
+                }
+                st.rerun()
+        if st.session_state.is_connected and st.session_state.device_name == "Mock TV":
+            if st.button("Simulate Disconnect"):
+                st.session_state.is_connected = False
+                st.session_state.device_name = None
+                st.session_state.services = {}
+                st.rerun()
 
     if st.session_state.is_connected:
         st.subheader(f"📟 Remote – {st.session_state.device_name}")
@@ -261,28 +297,34 @@ with col1:
                 for j, k in enumerate(keys[i:i+4]):
                     with cols[j]:
                         if st.button(k, key=f"preset_{k}"):
-                            st.components.v1.html(f"""
-                            <script>
-                            var iframe = window.parent.document.querySelector('iframe');
-                            if (iframe && iframe.contentWindow) {{
-                                iframe.contentWindow.sendCommand("{presets[k]}");
-                            }}
-                            </script>
-                            """, height=0)
-                            st.rerun()
+                            if st.session_state.simulation_mode:
+                                st.info(f"Simulation: sent {presets[k]}")
+                            else:
+                                st.components.v1.html(f"""
+                                <script>
+                                var iframe = window.parent.document.querySelector('iframe');
+                                if (iframe && iframe.contentWindow) {{
+                                    iframe.contentWindow.sendCommand("{presets[k]}");
+                                }}
+                                </script>
+                                """, height=0)
+                                st.rerun()
 
             st.markdown("#### Custom")
             custom = st.text_input("Data (text or hex like 0x0102)")
             if st.button("Send") and custom:
-                st.components.v1.html(f"""
-                <script>
-                var iframe = window.parent.document.querySelector('iframe');
-                if (iframe && iframe.contentWindow) {{
-                    iframe.contentWindow.sendCommand("{custom}");
-                }}
-                </script>
-                """, height=0)
-                st.rerun()
+                if st.session_state.simulation_mode:
+                    st.info(f"Simulation: sent {custom}")
+                else:
+                    st.components.v1.html(f"""
+                    <script>
+                    var iframe = window.parent.document.querySelector('iframe');
+                    if (iframe && iframe.contentWindow) {{
+                        iframe.contentWindow.sendCommand("{custom}");
+                    }}
+                    </script>
+                    """, height=0)
+                    st.rerun()
 
         try:
             history = json.loads(history_json)
@@ -301,4 +343,5 @@ with col2:
     - You'll be prompted to select a device – choose your TV.
     - After connection, pick a **Service**, then a **Characteristic**.
     - Send commands using the presets or enter custom hex/data.
+    - Use **Simulation Mode** to test the UI without a real device.
     """)
