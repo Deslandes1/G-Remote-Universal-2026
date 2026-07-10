@@ -1,11 +1,39 @@
 import streamlit as st
 import json
 import os
-import base64
 from datetime import datetime
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(page_title="G Remote Universal", page_icon="📺", layout="wide")
+
+# ---------- INJECT PARENT MESSAGE LISTENER ----------
+st.markdown("""
+<script>
+window.addEventListener('message', function(event) {
+    // Accept messages from our own iframe only (or any for simplicity)
+    const data = event.data;
+    if (data && data.type === 'bt_update') {
+        // Update parent URL query params
+        const url = new URL(window.location.href);
+        const params = data.data;
+        for (let key in params) {
+            if (params[key] !== null && params[key] !== undefined) {
+                url.searchParams.set(key, params[key]);
+            } else {
+                url.searchParams.delete(key);
+            }
+        }
+        // Replace state without reload
+        window.history.replaceState({}, '', url);
+        // Optionally trigger a Streamlit rerun by dispatching a popstate event?
+        // Streamlit watches the URL, so it will rerun automatically.
+        // But for immediate UI update, we can force a rerun by dispatching a custom event.
+        // However, it's better to rely on Streamlit's built-in detection.
+        // We'll also send a signal to Streamlit by setting a dummy query param? Not needed.
+    }
+});
+</script>
+""", unsafe_allow_html=True)
 
 # ---------- SESSION STATE ----------
 if "device_name" not in st.session_state:
@@ -36,7 +64,7 @@ def get_web_bt_html():
     <button id="disconnect-btn" onclick="disconnect()" style="display:none;">🔌 Disconnect</button>
     <div id="device-list" style="margin-top:10px;"></div>
     <div id="services-list" style="margin-top:10px;"></div>
-    <div id="cmd-output" style="margin-top:10px; background:#f0f0f0; padding:5px; border-radius:5px;"></div>
+    <div id="cmd-output" style="margin-top:10px; background:#f0f0f0; padding:5px; border-radius:5px; max-height:200px; overflow-y:auto;"></div>
 
     <script>
         let device = null;
@@ -45,16 +73,28 @@ def get_web_bt_html():
         let charMap = {};
         let selectedCharUUID = null;
 
+        // Helper to send updates to parent via postMessage
+        function updateParent(params) {
+            window.parent.postMessage({ type: 'bt_update', data: params }, '*');
+        }
+
         function log(msg) {
-            document.getElementById('cmd-output').innerHTML += msg + '<br>';
+            const out = document.getElementById('cmd-output');
+            out.innerHTML += msg + '<br>';
+            out.scrollTop = out.scrollHeight;
         }
 
         function updateStatus(msg) {
             document.getElementById('bt-status').innerText = msg;
-            // Update URL query param for Streamlit to read
-            const url = new URL(window.location);
-            url.searchParams.set('bt_status', msg);
-            window.history.replaceState({}, '', url);
+            updateParent({ bt_status: msg });
+        }
+
+        // Read initial state from parent URL
+        function getParentParam(key) {
+            try {
+                const url = new URL(window.parent.location.href);
+                return url.searchParams.get(key);
+            } catch(e) { return null; }
         }
 
         async function scan() {
@@ -75,48 +115,42 @@ def get_web_bt_html():
                 });
 
                 if (device) {
-                    // Connect
                     server = await device.gatt.connect();
                     updateStatus('Connected to ' + device.name);
-                    // Store in URL params for Python
-                    const url = new URL(window.location);
-                    url.searchParams.set('device_name', device.name);
-                    url.searchParams.set('device_id', device.id);
-                    url.searchParams.set('connected', 'true');
-                    window.history.replaceState({}, '', url);
+                    // Send connection info to parent
+                    updateParent({
+                        device_name: device.name,
+                        device_id: device.id,
+                        connected: 'true'
+                    });
 
                     // Discover services
                     const services = await server.getPrimaryServices();
                     let svcHtml = '<h4>Services</h4><ul>';
+                    let servicesJson = {};
                     for (let svc of services) {
                         const uuid = svc.uuid;
                         serviceMap[uuid] = svc;
                         svcHtml += `<li><strong>${uuid}</strong>`;
-                        // Get characteristics
                         const chars = await svc.getCharacteristics();
                         svcHtml += `<ul>`;
+                        servicesJson[uuid] = { characteristics: [] };
                         for (let ch of chars) {
                             const chUuid = ch.uuid;
                             charMap[chUuid] = ch;
                             svcHtml += `<li>${chUuid} (${ch.properties.join(', ')})</li>`;
+                            servicesJson[uuid].characteristics.push({
+                                uuid: chUuid,
+                                properties: ch.properties
+                            });
                         }
                         svcHtml += `</ul></li>`;
                     }
                     svcHtml += '</ul>';
                     document.getElementById('services-list').innerHTML = svcHtml;
 
-                    // Store services JSON in URL for Python
-                    const servicesJson = {};
-                    for (let svc of services) {
-                        const uuid = svc.uuid;
-                        const chars = await svc.getCharacteristics();
-                        servicesJson[uuid] = {
-                            characteristics: chars.map(c => ({ uuid: c.uuid, properties: c.properties }))
-                        };
-                    }
-                    const url2 = new URL(window.location);
-                    url2.searchParams.set('services', JSON.stringify(servicesJson));
-                    window.history.replaceState({}, '', url2);
+                    // Send services to parent
+                    updateParent({ services: JSON.stringify(servicesJson) });
 
                     document.getElementById('scan-btn').style.display = 'none';
                     document.getElementById('disconnect-btn').style.display = 'inline';
@@ -143,17 +177,19 @@ def get_web_bt_html():
             document.getElementById('device-list').innerHTML = '';
             document.getElementById('services-list').innerHTML = '';
             updateStatus('Disconnected');
-            const url = new URL(window.location);
-            url.searchParams.delete('device_name');
-            url.searchParams.delete('device_id');
-            url.searchParams.delete('connected');
-            url.searchParams.delete('services');
-            window.history.replaceState({}, '', url);
+            // Clear parent state
+            updateParent({
+                device_name: null,
+                device_id: null,
+                connected: 'false',
+                services: null
+            });
         }
 
         // Called when user selects a characteristic from Python (via dropdown)
         window.selectCharacteristic = function(uuid) {
             selectedCharUUID = uuid;
+            updateParent({ selected_char: uuid });
         };
 
         // Send command
@@ -172,7 +208,6 @@ def get_web_bt_html():
                     alert('Characteristic not found.');
                     return;
                 }
-                // Convert data to ArrayBuffer
                 let bytes;
                 if (typeof data === 'string') {
                     if (data.startsWith('0x') || data.startsWith('0X')) {
@@ -187,29 +222,32 @@ def get_web_bt_html():
                 }
                 await char.writeValue(bytes);
                 log(`✅ Sent: ${data}`);
-                // Update history in URL
-                const url = new URL(window.location);
-                const history = JSON.parse(url.searchParams.get('history') || '[]');
+                // Update command history in parent
+                let history = [];
+                try {
+                    const parentUrl = new URL(window.parent.location.href);
+                    const hist = parentUrl.searchParams.get('history');
+                    if (hist) history = JSON.parse(hist);
+                } catch(e) {}
                 history.push({ time: new Date().toLocaleTimeString(), data: data });
-                url.searchParams.set('history', JSON.stringify(history));
-                window.history.replaceState({}, '', url);
+                updateParent({ history: JSON.stringify(history) });
             } catch (e) {
                 alert('Send error: ' + e.message);
             }
         };
 
-        // Auto-run on load: read query params to restore state
+        // Auto-load initial state from parent URL
         (function() {
-            const params = new URLSearchParams(window.location.search);
-            const connected = params.get('connected') === 'true';
-            const deviceName = params.get('device_name');
+            const parentUrl = new URL(window.parent.location.href);
+            const connected = parentUrl.searchParams.get('connected') === 'true';
+            const deviceName = parentUrl.searchParams.get('device_name');
             if (connected && deviceName) {
                 document.getElementById('device-list').innerHTML = `<p>✅ Connected to: ${deviceName}</p>`;
                 document.getElementById('scan-btn').style.display = 'none';
                 document.getElementById('disconnect-btn').style.display = 'inline';
                 updateStatus('Connected to ' + deviceName);
             }
-            const servicesJson = params.get('services');
+            const servicesJson = parentUrl.searchParams.get('services');
             if (servicesJson) {
                 try {
                     const svc = JSON.parse(servicesJson);
@@ -225,6 +263,11 @@ def get_web_bt_html():
                     document.getElementById('services-list').innerHTML = html;
                 } catch(e) {}
             }
+            // Restore selected char
+            const selChar = parentUrl.searchParams.get('selected_char');
+            if (selChar) {
+                selectedCharUUID = selChar;
+            }
         })();
     </script>
     """
@@ -237,16 +280,11 @@ st.markdown("Control any Bluetooth‑enabled TV using **Web Bluetooth** (works i
 with st.sidebar:
     st.header("🔗 Connection")
 
-    # Detect Web Bluetooth support
-    if 'web_bt_supported' not in st.session_state:
-        # Check via query param from component
-        st.session_state.web_bt_supported = True  # assume for now, will be set by JS
-
-    # Use st.html to embed the Web Bluetooth component
-    st.components.v1.html(get_web_bt_html(), height=400, scrolling=True)
+    # Web Bluetooth component
+    st.components.v1.html(get_web_bt_html(), height=450, scrolling=True)
 
     st.divider()
-    st.caption("If scanning fails, try refreshing the page and allow Bluetooth permissions.")
+    st.caption("If scanning fails, refresh the page and allow Bluetooth permissions.")
 
     # Force simulation toggle
     force = st.checkbox("Force Simulation Mode", value=st.session_state.force_simulation)
@@ -258,11 +296,13 @@ with st.sidebar:
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    # Read connection status from query params
+    # Read state from query params (updated by parent listener)
     params = st.query_params
     device_name = params.get("device_name", None)
     connected = params.get("connected", "false") == "true"
     services_json = params.get("services", None)
+    selected_char = params.get("selected_char", None)
+    history_json = params.get("history", "[]")
 
     if connected and device_name:
         st.session_state.is_connected = True
@@ -277,6 +317,9 @@ with col1:
             st.session_state.is_connected = False
             st.session_state.device_name = None
             st.session_state.services = {}
+
+    if selected_char:
+        st.session_state.selected_char = selected_char
 
     if st.session_state.is_connected:
         st.subheader("📟 Remote Control")
@@ -294,14 +337,15 @@ with col1:
                     if chars:
                         char_options = [f"{c['uuid'][:8]}" for c in chars]
                         sel_char_idx = st.selectbox("Characteristic", range(len(chars)), format_func=lambda i: char_options[i])
-                        selected_char = chars[sel_char_idx]["uuid"]
-                        # Store selected char in session for JS to use
-                        st.session_state.selected_char = selected_char
-                        # Write to query param so JS can read it
-                        st.query_params["selected_char"] = selected_char
-                        st.write(f"Selected: {selected_char}")
+                        selected_char_uuid = chars[sel_char_idx]["uuid"]
+                        # Update query param for JS to read
+                        st.query_params["selected_char"] = selected_char_uuid
+                        st.session_state.selected_char = selected_char_uuid
+                        st.write(f"Selected: {selected_char_uuid}")
                     else:
                         st.info("No characteristics in this service.")
+            else:
+                st.info("No services found.")
 
         # Command sending
         st.markdown("#### Send Command")
@@ -336,13 +380,13 @@ with col1:
                 for j, key in enumerate(keys[i:i+4]):
                     with cols[j]:
                         if st.button(key, key=f"preset_{key}"):
-                            # Call JavaScript function via st.components.v1.html with a script
                             js = f"""
                             <script>
-                            if (window.sendCommand) {{
-                                window.sendCommand("{presets[key]}");
+                            var iframe = window.parent.document.querySelector('iframe[src*="about:blank"]');
+                            if (iframe && iframe.contentWindow) {{
+                                iframe.contentWindow.sendCommand("{presets[key]}");
                             }} else {{
-                                alert("Not connected or component not loaded.");
+                                alert('Component not loaded.');
                             }}
                             </script>
                             """
@@ -356,10 +400,11 @@ with col1:
                 if custom_input:
                     js = f"""
                     <script>
-                    if (window.sendCommand) {{
-                        window.sendCommand("{custom_input}");
+                    var iframe = window.parent.document.querySelector('iframe[src*="about:blank"]');
+                    if (iframe && iframe.contentWindow) {{
+                        iframe.contentWindow.sendCommand("{custom_input}");
                     }} else {{
-                        alert("Not connected or component not loaded.");
+                        alert('Component not loaded.');
                     }}
                     </script>
                     """
@@ -370,8 +415,7 @@ with col1:
         else:
             st.info("Select a characteristic first.")
 
-        # Command history from URL
-        history_json = params.get("history", "[]")
+        # Command history
         try:
             history = json.loads(history_json)
         except:
