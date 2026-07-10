@@ -216,16 +216,14 @@ with st.sidebar:
     st.header("🔗 Connection")
     st.components.v1.html(web_bt_component(), height=450, scrolling=True)
     st.divider()
-    st.info("💡 **Tips:**\n- Ensure your TV is in **discoverable/pairing mode**.\n- If you cancel the picker, just click **Scan** again.\n- Select a **Service**, then a **Characteristic** to send commands.")
-    st.warning("""
-    **📌 Multiple Remote Connections**
-    - Most modern TVs support **multiple Bluetooth connections**.
-    - You can connect this remote **while the original remote is still paired**.
-    - If the TV does not appear in the scan, you may need to:
-      1. Put the TV into **Bluetooth pairing mode** (check TV settings).
-      2. Restart the TV's Bluetooth or power cycle it.
-    - Even if the TV shows "already paired", you can still select it and connect.
-    """)
+    st.info("💡 **Correct procedure:**\n\n"
+            "1. **On your TV:** go to **Settings → Bluetooth** and make sure it is **discoverable** (do NOT start a scan from the TV).\n"
+            "2. **In the app:** click **Scan** – your computer will search for devices.\n"
+            "3. **Select your TV** from the list (look for its model name).\n"
+            "4. The TV will ask to confirm pairing – accept it.\n\n"
+            "**The list you see on the TV screen (like 'ios') is the TV scanning for other devices – ignore it.**")
+    st.warning("📌 **Already paired with another remote?**\n\n"
+               "You can still connect this app as a second remote. Most TVs support multiple Bluetooth connections simultaneously.")
 
 col1, col2 = st.columns([2,1])
 
@@ -313,21 +311,19 @@ with col1:
     else:
         st.info("🔌 Click **'Scan for Devices'** in the sidebar to connect to your TV.")
         st.markdown("""
-        ### ℹ️ How to pair
-        1. Make sure your TV is in **Bluetooth discovery mode** (check TV settings).
-        2. Click the **Scan** button – a browser picker will appear.
-        3. Select your TV from the list.
-        4. The TV may ask to confirm pairing – accept it.
-        5. Once connected, services and characteristics appear.
-        6. Pick a characteristic and send commands.
-        
+        ### ℹ️ How to pair (correct way)
+        1. **On the TV:** go to **Settings → Bluetooth** and **make it discoverable** (usually it's already visible; if not, select "Add device" or "Pair new device").
+        2. **Do NOT start a scan from the TV** – that only shows nearby phones, not the TV itself.
+        3. **On your computer:** click the **Scan** button in the app.
+        4. A browser picker appears showing all nearby Bluetooth devices.
+        5. **Select your TV** from that list (it will show its model name).
+        6. The TV will ask to confirm pairing – accept it.
+        7. You are now connected and can send commands.
+
         ### 🔄 Already paired with another remote?
-        - This app can connect **simultaneously** with your existing remote.
-        - If the TV doesn't appear in the scan:
-          - Put the TV into **Bluetooth pairing mode** (Settings → Bluetooth → Add device).
-          - Power cycle the TV's Bluetooth (turn off/on).
-          - Scan again.
-        - Once connected, both remotes will work together.
+        - You can connect this app **without disconnecting** the original remote.
+        - Most modern TVs support multiple simultaneous Bluetooth connections.
+        - Just follow the steps above – the TV will allow a new pairing.
         """)
 
 with col2:
