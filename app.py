@@ -37,8 +37,6 @@ if "selected_char" not in st.session_state:
     st.session_state.selected_char = None
 if "command_history" not in st.session_state:
     st.session_state.command_history = []
-if "simulation_mode" not in st.session_state:
-    st.session_state.simulation_mode = False
 
 # ---------- FULL UUID CONSTANTS ----------
 GENERIC_ACCESS = "00001800-0000-1000-8000-00805f9b34fb"
@@ -83,23 +81,25 @@ def web_bt_component():
 
         async function scan() {{
             if (!navigator.bluetooth) {{
-                alert('Web Bluetooth not supported. Use Chrome/Edge.');
+                alert('❌ Web Bluetooth not supported. Please use Chrome or Edge.');
                 return;
             }}
             try {{
                 document.getElementById('scan-btn').disabled = true;
-                updateStatus('Scanning...');
+                updateStatus('🔍 Scanning...');
+                
                 device = await navigator.bluetooth.requestDevice({{
                     filters: [{{ services: [GENERIC_ACCESS] }}],
                     optionalServices: [GENERIC_ACCESS, GENERIC_ATTRIBUTE, DEVICE_INFO, HID_SERVICE, BATTERY_SERVICE]
                 }});
+                
                 if (device) {{
                     server = await device.gatt.connect();
-                    updateStatus('Connected to ' + device.name);
+                    updateStatus('✅ Connected to ' + device.name);
                     updateParent({{ device_name: device.name, connected: 'true' }});
 
                     const services = await server.getPrimaryServices();
-                    let svcHtml = '<h4>Services</h4><ul>';
+                    let svcHtml = '<h4>📋 Services</h4><ul>';
                     let svcJson = {{}};
                     for (let svc of services) {{
                         const uuid = svc.uuid;
@@ -122,12 +122,12 @@ def web_bt_component():
                     document.getElementById('device-info').innerHTML = `✅ Connected to: ${{device.name}}`;
                 }}
             }} catch (err) {{
-                // Handle user cancellation gracefully
-                if (err.message && (err.message.includes('cancelled') || err.message.includes('cancel'))) {{
-                    updateStatus('Scan cancelled by user');
+                if (err.message && err.message.includes('cancelled')) {{
+                    alert('⚠️ You cancelled the device selection. Click "Scan" again to try.');
+                    updateStatus('⚠️ Selection cancelled – try again');
                 }} else {{
-                    alert('Error: ' + err.message);
-                    updateStatus('Error: ' + err.message);
+                    alert('❌ Error: ' + err.message);
+                    updateStatus('❌ Error: ' + err.message);
                 }}
             }} finally {{
                 document.getElementById('scan-btn').disabled = false;
@@ -135,27 +135,30 @@ def web_bt_component():
         }}
 
         async function disconnect() {{
-            if (server) await server.disconnect();
+            if (server) {{
+                try {{ await server.disconnect(); }} catch(e) {{}}
+            }}
             device = null; server = null; charMap = {{}};
             document.getElementById('disconnect-btn').style.display = 'none';
             document.getElementById('scan-btn').style.display = 'inline';
             document.getElementById('device-info').innerHTML = '';
             document.getElementById('services-info').innerHTML = '';
-            updateStatus('Disconnected');
+            updateStatus('🔌 Disconnected');
             updateParent({{ device_name: null, connected: 'false', services: null }});
         }}
 
+        // This function is called from Python
         window.sendCommand = async function(data) {{
-            if (!selectedCharUUID) {{ alert('Select a characteristic first.'); return; }}
-            if (!server) {{ alert('Not connected.'); return; }}
+            if (!selectedCharUUID) {{ alert('⚠️ Select a characteristic first.'); return; }}
+            if (!server) {{ alert('⚠️ Not connected.'); return; }}
             try {{
                 const char = charMap[selectedCharUUID];
-                if (!char) {{ alert('Characteristic not found.'); return; }}
+                if (!char) {{ alert('⚠️ Characteristic not found.'); return; }}
                 let bytes;
                 if (typeof data === 'string') {{
                     if (data.startsWith('0x')) {{
                         const hex = data.slice(2);
-                        if (hex.length % 2 !== 0) {{ alert('Hex string must have even length'); return; }}
+                        if (hex.length % 2 !== 0) {{ alert('⚠️ Hex string must have even length'); return; }}
                         bytes = new Uint8Array(hex.match(/.{{1,2}}/g).map(b => parseInt(b, 16))).buffer;
                     }} else {{
                         bytes = new TextEncoder().encode(data);
@@ -168,7 +171,7 @@ def web_bt_component():
                 hist.push({{ time: new Date().toLocaleTimeString(), data }});
                 updateParent({{ history: JSON.stringify(hist) }});
             }} catch (e) {{
-                alert('Send error: ' + e.message);
+                alert('❌ Send error: ' + e.message);
             }}
         }};
 
@@ -181,13 +184,13 @@ def web_bt_component():
                 document.getElementById('device-info').innerHTML = `✅ Connected to: ${{name}}`;
                 document.getElementById('scan-btn').style.display = 'none';
                 document.getElementById('disconnect-btn').style.display = 'inline';
-                updateStatus('Connected to ' + name);
+                updateStatus('✅ Connected to ' + name);
             }}
             const svc = parentUrl.searchParams.get('services');
             if (svc) {{
                 try {{
                     const data = JSON.parse(svc);
-                    let html = '<h4>Services</h4><ul>';
+                    let html = '<h4>📋 Services</h4><ul>';
                     for (let [uuid, info] of Object.entries(data)) {{
                         html += `<li><strong>${{uuid}}</strong><ul>`;
                         for (let ch of info.characteristics) {{
@@ -211,16 +214,9 @@ st.markdown("Control any Bluetooth TV using Web Bluetooth (Chrome/Edge).")
 
 with st.sidebar:
     st.header("🔗 Connection")
-    st.components.v1.html(web_bt_component(), height=400, scrolling=True)
-    
+    st.components.v1.html(web_bt_component(), height=450, scrolling=True)
     st.divider()
-    simulation = st.checkbox("Simulation Mode (no Bluetooth)", value=st.session_state.simulation_mode)
-    if simulation != st.session_state.simulation_mode:
-        st.session_state.simulation_mode = simulation
-        st.rerun()
-    
-    if st.button("🔄 Refresh State"):
-        st.rerun()
+    st.info("💡 **Tips:**\n- Ensure your TV is in **discoverable/pairing mode**.\n- If you cancel the picker, just click **Scan** again.\n- Select a **Service**, then a **Characteristic** to send commands.")
 
 col1, col2 = st.columns([2,1])
 
@@ -244,28 +240,6 @@ with col1:
         st.session_state.is_connected = False
         st.session_state.device_name = None
 
-    if st.session_state.simulation_mode:
-        st.info("🧪 Simulation Mode: The interface works but commands won't reach a real device.")
-        # Show a mock connection for testing
-        if not st.session_state.is_connected:
-            if st.button("Simulate Connect"):
-                st.session_state.is_connected = True
-                st.session_state.device_name = "Mock TV"
-                st.session_state.services = {
-                    "00001800-0000-1000-8000-00805f9b34fb": {
-                        "characteristics": [
-                            {"uuid": "00002a00-0000-1000-8000-00805f9b34fb", "properties": ["read"]}
-                        ]
-                    }
-                }
-                st.rerun()
-        if st.session_state.is_connected and st.session_state.device_name == "Mock TV":
-            if st.button("Simulate Disconnect"):
-                st.session_state.is_connected = False
-                st.session_state.device_name = None
-                st.session_state.services = {}
-                st.rerun()
-
     if st.session_state.is_connected:
         st.subheader(f"📟 Remote – {st.session_state.device_name}")
         if st.session_state.services:
@@ -279,10 +253,10 @@ with col1:
                         sel_char_idx = st.selectbox("Characteristic", range(len(chars)), format_func=lambda i: char_opts[i][:8])
                         st.session_state.selected_char = chars[sel_char_idx]["uuid"]
                         st.query_params["selected_char"] = st.session_state.selected_char
-                        st.write(f"Selected: {st.session_state.selected_char}")
+                        st.success(f"Selected: {st.session_state.selected_char}")
 
         if st.session_state.selected_char:
-            st.markdown("#### Presets")
+            st.markdown("#### 🎮 Presets")
             presets = {
                 "▶ Play": "0x01", "⏸ Pause": "0x02", "⏹ Stop": "0x03",
                 "⏭ Next": "0x04", "⏮ Prev": "0x05",
@@ -297,51 +271,63 @@ with col1:
                 for j, k in enumerate(keys[i:i+4]):
                     with cols[j]:
                         if st.button(k, key=f"preset_{k}"):
-                            if st.session_state.simulation_mode:
-                                st.info(f"Simulation: sent {presets[k]}")
-                            else:
-                                st.components.v1.html(f"""
-                                <script>
-                                var iframe = window.parent.document.querySelector('iframe');
-                                if (iframe && iframe.contentWindow) {{
-                                    iframe.contentWindow.sendCommand("{presets[k]}");
-                                }}
-                                </script>
-                                """, height=0)
-                                st.rerun()
+                            st.components.v1.html(f"""
+                            <script>
+                            var iframe = window.parent.document.querySelector('iframe');
+                            if (iframe && iframe.contentWindow) {{
+                                iframe.contentWindow.sendCommand("{presets[k]}");
+                            }}
+                            </script>
+                            """, height=0)
+                            st.rerun()
 
-            st.markdown("#### Custom")
+            st.markdown("#### ✏️ Custom Command")
             custom = st.text_input("Data (text or hex like 0x0102)")
-            if st.button("Send") and custom:
-                if st.session_state.simulation_mode:
-                    st.info(f"Simulation: sent {custom}")
-                else:
-                    st.components.v1.html(f"""
-                    <script>
-                    var iframe = window.parent.document.querySelector('iframe');
-                    if (iframe && iframe.contentWindow) {{
-                        iframe.contentWindow.sendCommand("{custom}");
-                    }}
-                    </script>
-                    """, height=0)
-                    st.rerun()
+            if st.button("Send Custom") and custom:
+                st.components.v1.html(f"""
+                <script>
+                var iframe = window.parent.document.querySelector('iframe');
+                if (iframe && iframe.contentWindow) {{
+                    iframe.contentWindow.sendCommand("{custom}");
+                }}
+                </script>
+                """, height=0)
+                st.rerun()
 
         try:
             history = json.loads(history_json)
             if history:
-                st.markdown("#### History")
+                st.markdown("#### 📜 Command History")
                 for entry in history[-10:]:
                     st.text(f"[{entry['time']}] {entry['data']}")
         except: pass
     else:
-        st.info("Click 'Scan for Devices' in the sidebar to connect to your TV.")
+        st.info("🔌 Click **'Scan for Devices'** in the sidebar to connect to your TV.")
+        st.markdown("""
+        ### ℹ️ How to pair
+        1. Make sure your TV is in **Bluetooth discovery mode** (check TV settings).
+        2. Click the **Scan** button – a browser picker will appear.
+        3. Select your TV from the list.
+        4. The TV may ask to confirm pairing – accept it.
+        5. Once connected, services and characteristics appear.
+        6. Pick a characteristic and send commands.
+        """)
 
 with col2:
-    st.subheader("📋 Tips")
+    st.subheader("📋 Quick Guide")
     st.markdown("""
-    - **Web Bluetooth** works in Chrome, Edge, and other Chromium browsers.
-    - You'll be prompted to select a device – choose your TV.
-    - After connection, pick a **Service**, then a **Characteristic**.
-    - Send commands using the presets or enter custom hex/data.
-    - Use **Simulation Mode** to test the UI without a real device.
+    - **Browser:** Chrome 56+, Edge 79+
+    - **TV must support Bluetooth LE (BLE)**
+    - **Common HID service:**  
+      `00001812-0000-1000-8000-00805f9b34fb`  
+      **Report characteristic:**  
+      `00002a4d-0000-1000-8000-00805f9b34fb`
+    - The preset commands send standard HID key codes (0x01 = Play, 0x02 = Pause, etc.)
+    - If the TV doesn't respond, try the **HID service** and the **Report** characteristic.
+    - **Troubleshooting:**  
+      - Refresh the page if the picker doesn't appear.  
+      - Ensure no other Bluetooth app is using the device.
     """)
+
+st.divider()
+st.caption("G Remote Universal – Web Bluetooth Edition. Works on Streamlit Cloud!")
